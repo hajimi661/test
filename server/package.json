@@ -1,0 +1,14 @@
+{
+  "name": "sanguosha-server",
+  "version": "1.0.0",
+  "description": "三国杀网页版 - 后端服务",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "socket.io": "^4.7.5"
+  }
+}
