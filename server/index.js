@@ -182,6 +182,13 @@ io.on('connection', (socket) => {
 
         room.game.on('stateChanged', () => {
           io.to(id).emit('game_state', room.game.getPublicState());
+          // 同步所有人类玩家的手牌
+          for (const rp of room.players) {
+            if (!rp.isAI) {
+              const ps = room.game.getStateForPlayer(rp.id);
+              if (ps) io.to(rp.id).emit('hand_update', ps.hand);
+            }
+          }
         });
         room.game.on('log', (msg) => { io.to(id).emit('game_log', msg); });
         room.game.on('turnStart', ({ playerId, playerName, turnNum }) => {

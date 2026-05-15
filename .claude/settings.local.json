@@ -17,7 +17,17 @@
       "PowerShell(node -e \"const fs=require\\('fs'\\); const s=fs.readFileSync\\('D:/sanguo/client/js/main.js','utf8'\\); if\\(s.includes\\('myHand.splice'\\)\\){ const lines=s.split\\('\\\\n'\\).filter\\(l=>l.includes\\('myHand.splice'\\)\\); console.log\\('Remaining:', lines.length\\); lines.forEach\\(l=>console.log\\(l.trim\\(\\)\\)\\); } else console.log\\('None'\\); new Function\\(s\\); console.log\\('Syntax OK'\\);\")",
       "PowerShell(node -e \"const fs=require\\('fs'\\); const s=fs.readFileSync\\('D:/sanguo/client/js/main.js','utf8'\\); if\\(s.includes\\('myHand.splice'\\)\\) console.log\\('Still present'\\); else console.log\\('None'\\); try{new Function\\(s\\);console.log\\('Syntax OK'\\)}catch\\(e\\){console.log\\('ERROR:',e.message.substring\\(0,100\\)\\)}\")",
       "PowerShell(Remove-Item *)",
-      "PowerShell(\\(Invoke-WebRequest -UseBasicParsing -Uri \"http://localhost:3000/\"\\).StatusCode; \\(Invoke-WebRequest -UseBasicParsing -Uri \"http://localhost:3000/css/style.css\"\\).StatusCode; \\(Invoke-WebRequest -UseBasicParsing -Uri \"http://localhost:3000/js/main.js\"\\).StatusCode)"
+      "PowerShell(\\(Invoke-WebRequest -UseBasicParsing -Uri \"http://localhost:3000/\"\\).StatusCode; \\(Invoke-WebRequest -UseBasicParsing -Uri \"http://localhost:3000/css/style.css\"\\).StatusCode; \\(Invoke-WebRequest -UseBasicParsing -Uri \"http://localhost:3000/js/main.js\"\\).StatusCode)",
+      "Skill(claude-mem:learn-codebase)",
+      "Skill(karpathy-guidelines)",
+      "Skill(frontend-design)",
+      "Skill(web-access)"
     ]
+  },
+  "hooks": {
+    "PreToolUse": [],
+    "PostToolUse": [],
+    "UserPromptSubmit": [],
+    "Stop": []
   }
 }
