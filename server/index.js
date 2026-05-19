@@ -5,7 +5,7 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
-const { SanguoshaGame, IDENTITY_LABEL } = require('./game-engine');
+const { SanguoshaGame, IDENTITY_LABEL, HEROES } = require('./game-engine');
 const { AIPlayer } = require('./ai-player');
 
 const app = express();
@@ -71,6 +71,36 @@ class Room {
   }
 }
 
+// ---------- 英雄选择后启动游戏 ----------
+function startGameWithHeroes(room, roomId) {
+  if (!room.game) return;
+  const choices = room._heroChoices || {};
+  const selectable = room._selectableHeroes || [];
+  const usedHeroIds = new Set();
+
+  for (let i = 0; i < room.players.length; i++) {
+    const rp = room.players[i];
+    let heroId = choices[rp.id];
+    // 如果人类玩家没选，或AI玩家，从剩余中随机
+    if (!heroId || !HEROES[heroId] || usedHeroIds.has(heroId)) {
+      const available = Object.keys(HEROES).filter(k => !usedHeroIds.has(k));
+      heroId = available[Math.floor(Math.random() * available.length)];
+    }
+    usedHeroIds.add(heroId);
+    room.game.players[i].hero = HEROES[heroId];
+  }
+
+  // 启动游戏
+  room.game.start();
+  for (const p of room.players) {
+    if (!p.isAI) {
+      const state = room.game.getStateForPlayer(p.id);
+      if (state) io.to(p.id).emit('your_info', state);
+    }
+  }
+  console.log(`[游戏] ${roomId} 开始 (${room.players.length}人, AI:${room.players.filter(x=>x.isAI).length})`);
+}
+
 // ---------- Socket 事件 ----------
 io.on('connection', (socket) => {
   console.log(`[连接] ${socket.id}`);
@@ -84,7 +114,16 @@ io.on('connection', (socket) => {
   });
 
   socket.on('create_room', ({ name, maxPlayers }) => {
-    const id = generateRoomId();
+    // 先从旧房间移除（防止 findRoomByPlayer 找到旧房间）
+    for (const [oldId, oldRoom] of rooms) {
+      if (oldRoom.players.find(p => p.id === socket.id)) {
+        oldRoom.removePlayer(socket.id);
+        socket.leave(oldId);
+        if (oldRoom.players.length === 0) rooms.delete(oldId);
+        else io.to(oldId).emit('room_update', oldRoom.toJSON());
+      }
+    }
+    let id = generateRoomId();
     while (rooms.has(id)) id = generateRoomId();
     const room = new Room(id, socket.id, name || '玩家', parseInt(maxPlayers) || 4);
     rooms.set(id, room);
@@ -177,18 +216,29 @@ io.on('connection', (socket) => {
         const playerIds = room.players.map(p => p.id);
         const playerNames = room.players.map(p => p.name);
 
+        // 清除旧游戏的事件监听器（防止重复触发）
+        if (room.game) { room.game.status = 'ended'; room.game._listeners = {}; }
         room.game = new SanguoshaGame(playerIds, playerNames);
+        console.log(`[start_game] 创建游戏, 玩家:`, playerIds);
+        // 标记AI玩家
+        for (let i = 0; i < room.players.length; i++) {
+          if (room.players[i].isAI) room.game.players[i].isHuman = false;
+        }
         room.ai = new AIPlayer(room.game);
 
         room.game.on('stateChanged', () => {
-          io.to(id).emit('game_state', room.game.getPublicState());
-          // 同步所有人类玩家的手牌
+          // 每个玩家收到自己的视角（含距离信息和武将技能）
           for (const rp of room.players) {
             if (!rp.isAI) {
+              io.to(rp.id).emit('game_state', room.game.getPublicState(rp.id));
               const ps = room.game.getStateForPlayer(rp.id);
-              if (ps) io.to(rp.id).emit('hand_update', ps.hand);
+              if (ps) {
+                io.to(rp.id).emit('hand_update', ps.hand);
+                if (ps.hero) io.to(rp.id).emit('your_info', ps);
+              }
             }
           }
+          // AI和其他监听者用默认视角
         });
         room.game.on('log', (msg) => { io.to(id).emit('game_log', msg); });
         room.game.on('turnStart', ({ playerId, playerName, turnNum }) => {
@@ -196,10 +246,16 @@ io.on('connection', (socket) => {
         });
         room.game.on('awaitPlay', ({ playerId }) => {
           const p = room.players.find(x => x.id === playerId);
+          console.log(`[awaitPlay] playerId: ${playerId}, found: ${!!p}, isAI: ${p?.isAI}, gameStatus: ${room.game?.status}`);
           if (!p) return;
           if (p.isAI) { room.ai.onAwaitPlay(playerId); }
           else { io.to(playerId).emit('your_action', { type: 'play' }); }
           io.to(id).emit('chat_message', { name: '系统', msg: `轮到 ${p.name} 出牌` });
+        });
+        room.game.on('awaitGuanXing', ({ playerId, cards, count }) => {
+          const p = room.players.find(x => x.id === playerId);
+          if (!p || p.isAI) return;
+          io.to(playerId).emit('your_action', { type: 'guanXing', cards, count });
         });
         room.game.on('awaitDiscard', ({ playerId, count }) => {
           const p = room.players.find(x => x.id === playerId);
@@ -212,6 +268,12 @@ io.on('connection', (socket) => {
           if (!p) return;
           if (p.isAI) { room.ai.onAwaitResponse(playerId, type, label); }
           else { io.to(playerId).emit('your_action', { type: 'response', respondType: type, label }); }
+        });
+        room.game.on('awaitDrawChoice', ({ playerId, skillId, label }) => {
+          const p = room.players.find(x => x.id === playerId);
+          if (!p) return;
+          if (p.isAI) { room.ai.onAwaitDrawChoice(playerId, skillId); }
+          else { io.to(playerId).emit('your_action', { type: 'draw_choice', skillId, label }); }
         });
         room.game.on('drawCards', ({ playerId, cards }) => {
           const p = room.players.find(x => x.id === playerId);
@@ -228,15 +290,33 @@ io.on('connection', (socket) => {
         });
 
         io.to(id).emit('room_update', room.toJSON());
-        io.to(id).emit('game_start', { myId: socket.id, totalPlayers: room.players.length });
-        room.game.start();
 
-        for (const p of room.players) {
-          if (p.isAI) continue;
-          const state = room.game.getStateForPlayer(p.id);
-          if (state) io.to(p.id).emit('your_info', state);
+        // 英雄选择：给人类玩家发送可选英雄列表
+        const allHeroKeys = Object.keys(HEROES);
+        const shuffledHeroes = [...allHeroKeys].sort(() => Math.random() - 0.5);
+        const selectableHeroes = shuffledHeroes.slice(0, Math.min(6, allHeroKeys.length)).map(k => ({
+          id: HEROES[k].id, name: HEROES[k].name, hp: HEROES[k].hp, gender: HEROES[k].gender,
+          skillName: HEROES[k].skillName, skillDesc: HEROES[k].skillDesc,
+        }));
+        room._selectableHeroes = selectableHeroes;
+        room._heroChoices = {};
+
+        // 通知所有人类玩家游戏开始（附带可选英雄）
+        for (const rp of room.players) {
+          if (!rp.isAI) {
+            io.to(rp.id).emit('game_start', { myId: rp.id, totalPlayers: room.players.length });
+            io.to(rp.id).emit('hero_selection', { heroes: selectableHeroes });
+          }
         }
-        console.log(`[游戏] ${id} 开始 (${room.players.length}人, AI:${room.players.filter(x=>x.isAI).length})`);
+
+        // 等待人类玩家选择英雄（10秒超时自动随机）
+        room._heroSelectionTimeout = setTimeout(() => {
+          if (room.game && room.status === 'playing') {
+            startGameWithHeroes(room, id);
+          }
+        }, 10000);
+
+        console.log(`[游戏] ${id} 英雄选择阶段 (${room.players.length}人, AI:${room.players.filter(x=>x.isAI).length})`);
         return;
       }
     }
@@ -245,10 +325,43 @@ io.on('connection', (socket) => {
   // ---- 游戏动作 ----
   socket.on('play_card', ({ cardIdx, targetIdx }) => {
     const room = findRoomByPlayer(socket.id);
+    if (!room || !room.game) { console.log(`[play_card] 没找到房间或游戏: ${socket.id}`); return; }
+    const g = room.game;
+    console.log(`[play_card] player=${socket.id}, cardIdx=${cardIdx}, waitingFor=${g.waitingFor}, curId=${g.cur?.id}, phase=${g.phase}, status=${g.status}, handLen=${g.cur?.hand?.length}`);
+    const r = g.playerPlayCard(socket.id, cardIdx, targetIdx);
+    if (!r.ok) {
+      console.log(`[play_card] 失败: ${r.msg}`);
+      socket.emit('action_error', { msg: r.msg });
+    }
+  });
+
+  // 观星选择
+  socket.on('guanXing_choice', ({ topIndices }) => {
+    const room = findRoomByPlayer(socket.id);
     if (!room || !room.game) return;
-    const r = room.game.playerPlayCard(socket.id, cardIdx, targetIdx);
+    const r = room.game.playerGuanXing(socket.id, topIndices || []);
     if (!r.ok) socket.emit('action_error', { msg: r.msg });
   });
+
+  // 选择英雄
+  socket.on('select_hero', ({ heroId }) => {
+    for (const [id, room] of rooms) {
+      if (room.players.find(p => p.id === socket.id) && room._heroChoices !== undefined) {
+        if (!HEROES[heroId]) return;
+        room._heroChoices[socket.id] = heroId;
+        io.to(socket.id).emit('hero_selected', { heroId });
+        // 检查所有人类玩家是否都已选择
+        const humanPlayers = room.players.filter(p => !p.isAI);
+        const allChosen = humanPlayers.every(p => room._heroChoices[p.id]);
+        if (allChosen) {
+          clearTimeout(room._heroSelectionTimeout);
+          startGameWithHeroes(room, id);
+        }
+        return;
+      }
+    }
+  });
+
   socket.on('end_play', () => {
     const room = findRoomByPlayer(socket.id);
     if (!room || !room.game) return;
@@ -277,6 +390,11 @@ io.on('connection', (socket) => {
     const r = room.game.useSkill(socket.id, skillId, data);
     if (!r.ok) socket.emit('action_error', { msg: r.msg });
   });
+  socket.on('draw_choice', ({ useSkill }) => {
+    const room = findRoomByPlayer(socket.id);
+    if (!room || !room.game) return;
+    room.game.playerDrawChoice(socket.id, useSkill);
+  });
 
   // ---- 退出/重开 ----
   socket.on('quit_game', () => {
@@ -301,6 +419,13 @@ io.on('connection', (socket) => {
   socket.on('restart_room', () => {
     for (const [id, room] of rooms) {
       if (room.hostId === socket.id) {
+        console.log(`[restart] 房间 ${id} 重置, 当前玩家:`, room.players.map(p => p.id));
+        // 停止旧游戏并清除所有监听器（防止旧事件继续触发）
+        if (room.game) {
+          room.game.status = 'ended';
+          clearTimeout(room.game._saveChainTimer);
+          room.game._listeners = {}; // 清除自定义事件监听器
+        }
         room.status = 'waiting';
         room.game = null;
         room.ai = null;

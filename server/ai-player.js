@@ -37,6 +37,18 @@ class AIPlayer {
     setTimeout(() => this._runResponse(playerId, type), 150);
   }
 
+  onAwaitDrawChoice(playerId, skillId) {
+    this._clearAllTimers(playerId);
+    this._setTimer(playerId, 'drawChoice', 5000, () => { if (this.game.status === 'playing') this.game.playerDrawChoice(playerId, false); });
+    setTimeout(() => {
+      const g = this.game; const p = g.players.find(x => x.id === playerId);
+      if (!p || !p.alive || g.status !== 'playing') return;
+      // AI策略：手牌少于3张时发动裸衣
+      const useSkill = skillId === 'luoYi' && p.hand.length < 3;
+      g.playerDrawChoice(playerId, useSkill);
+    }, 150);
+  }
+
   // ----- 强制操作 -----
   _forceEndPlay(playerId) {
     const g = this.game;
@@ -141,10 +153,17 @@ class AIPlayer {
       if (t !== null) { g.useSkill(playerId, 'fanJian', { targetIdx: t, guessedSuit: Math.floor(Math.random() * 4) }); this._continuePlay(playerId); return; }
     }
 
-    // 9. 离间
+    // 9. 离间（需要两名男性角色）
     if (p.hero && p.hero.skillId === 'liJian' && !p.skillsUsed.liJian && p.hand.length > 0) {
-      const males = g.players.filter(t => t.alive && t.id !== playerId);
-      if (males.length >= 2) { g.useSkill(playerId, 'liJian', { cardIdx: 0, fromIdx: g.players.indexOf(males[0]), toIdx: g.players.indexOf(males[1]) }); this._continuePlay(playerId); return; }
+      const males = g.players.filter(t => t.alive && t.id !== playerId && t.hero && t.hero.gender === 'male');
+      if (males.length >= 2) {
+        // 优先让敌人互相攻击
+        const enemies = males.filter(t => p.isEnemyOf(t));
+        const from = enemies.length > 0 ? enemies[0] : males[0];
+        const to = enemies.length > 1 ? enemies[1] : males.find(t => t !== from) || males[1];
+        g.useSkill(playerId, 'liJian', { cardIdx: 0, fromIdx: g.players.indexOf(from), toIdx: g.players.indexOf(to) });
+        this._continuePlay(playerId); return;
+      }
     }
 
     // 10. 装备

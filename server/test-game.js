@@ -61,6 +61,18 @@ async function startGame() {
   socket.emit('start_game');
   const startData = await waitFor('game_start');
   log(`游戏已开始，玩家数: ${startData.totalPlayers}`);
+  // 等待英雄选择，自动选第一个
+  try {
+    const heroData = await waitFor('hero_selection', 3000);
+    if (heroData.heroes && heroData.heroes.length > 0) {
+      socket.emit('select_hero', { heroId: heroData.heroes[0].id });
+      log(`选择了英雄: ${heroData.heroes[0].name}`);
+    }
+  } catch (e) {
+    // 没有英雄选择（可能已超时），继续
+  }
+  // 等待游戏真正开始（your_info 表示游戏已启动）
+  await waitFor('your_info', 15000);
   return startData;
 }
 
